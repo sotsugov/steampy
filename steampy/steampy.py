@@ -5,7 +5,7 @@ import requests
 from bs4 import BeautifulSoup
 
 
-THRESHOLD = 10
+THRESHOLD = 50
 STEAM_ID = '76561197987677089'
 LOCALE = 'gb'
 
@@ -94,7 +94,7 @@ class Steampy():
         item_list = self.get_content()
         short_list = self.truncate_wish_list(list(item_list))
         payload = self.prepare_payload(short_list)
-        print[payload]
+        print [payload]
 
 if __name__ == "__main__":
     s = Steampy()
