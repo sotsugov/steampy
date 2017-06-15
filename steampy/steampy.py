@@ -26,7 +26,7 @@ class Steampy():
     def get_content(self):
         response = requests.get(
             WISHLIST_URL.format(self.steam_id),
-            params={"cc": LOCALE, "sort": "price"})
+            params={"cc": self.locale, "sort": "price"})
 
         soup = BeautifulSoup(response.text, 'html.parser')
         for row in soup.find_all('div', 'wishlistRow'):
@@ -41,7 +41,7 @@ class Steampy():
             }
 
     def truncate_wish_list(self, item_list):
-        print item_list
+        # print item_list
         initial_item_list = list(item_list)
         short_item_list = initial_item_list
         if len(item_list) > WISHLIST_MAX_LEN and WISHLIST_MAX_LEN > 0:
@@ -83,7 +83,7 @@ class Steampy():
             'text': payload})
         response_data = response.json()
 
-        print response_data
+        # print response_data
         print "Sent to {0}, n/o messages {1}: {2}".format(
             recepient_number,
             response_data["message-count"],
