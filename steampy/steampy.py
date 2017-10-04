@@ -1,101 +1,140 @@
 # -*- coding: utf-8 -*-
-import re
-import os
 import requests
 from bs4 import BeautifulSoup
 
 
-THRESHOLD = 50
-STEAM_ID = '76561197987677089'
-LOCALE = 'gb'
-
-STEAM_STORE_URL = "https://store.steampowered.com/app/"
-WISHLIST_URL = "http://steamcommunity.com/profiles/{}/wishlist"
-NEXMO_SMS_URL = "https://rest.nexmo.com/sms/json"
-WISHLIST_MAX_LEN = 50
+THRESHOLD = 33
 VARIANCE = 10
+STEAM_ID = '76561197987677089'
+LOCALE = 'ee'
+STEAM_STORE_URL = "https://store.steampowered.com/app/{}"
+WISH_LIST_URL = "https://steamcommunity.com/profiles/{}/wishlist"
 
 
-class Steampy():
+class LazyLoadingPage(object):
 
     def __init__(self, steam_id=None, threshold=None, locale=None):
         self.steam_id = steam_id or STEAM_ID
         self.threshold = threshold or THRESHOLD
         self.locale = locale or LOCALE
+        self._req = None
+        self._soup = None
 
-    def get_content(self):
-        response = requests.get(
-            WISHLIST_URL.format(self.steam_id),
-            params={"cc": self.locale, "sort": "price"})
+    @property
+    def req(self):
+        if self._req is None:
+            self._req = requests.get(
+                WISH_LIST_URL.format(self.steam_id),
+                params={"cc": self.locale, "sort": "price"})
+        return self._req
 
-        soup = BeautifulSoup(response.text, 'html.parser')
-        for row in soup.find_all('div', 'wishlistRow'):
-            app_id = row['id'][5:]
-            yield {
-                'app_id': app_id,
-                'store_url': ''.join([STEAM_STORE_URL, app_id]),
-                'title': row.h4.string,
-                'discount': ''.join([discount.string for discount in row.select('div.discount_pct')]),
-                'price_discounted': ''.join([d_price.string for d_price in row.select('div.discount_final_price')]),
-                'price_default': ''.join([price.string.strip(' \t\n\r') for price in row.select('div.price')]),
-            }
+    @property
+    def soup(self):
+        if self._soup is None:
+            self._soup = BeautifulSoup(self.req.text, "html.parser")
+        return self._soup
 
-    def truncate_wish_list(self, item_list):
-        # print item_list
-        initial_item_list = list(item_list)
-        short_item_list = initial_item_list
-        if len(item_list) > WISHLIST_MAX_LEN and WISHLIST_MAX_LEN > 0:
-            print "[!] Warning, wishlist exceeds {} (actual {})".format(
-                WISHLIST_MAX_LEN, len(item_list))
 
-            short_item_list = initial_item_list[:WISHLIST_MAX_LEN]
-            truncated_items = initial_item_list[WISHLIST_MAX_LEN:]
-            print "List truncated to {}, lost {}: {}".format(
-                len(short_item_list),
-                len(truncated_items),
-                [app['app_id'] for app in truncated_items])
-        return short_item_list
+class WishList(LazyLoadingPage):
 
-    def prepare_payload(self, item_list, include_close_matches=True):
-        matches, close_matches = [], []
-        # print len(item_list)
-        for app in item_list:
-            if app["discount"]:
-                discount = int(re.sub("[^0-9]", "", app["discount"]))
-                template = u"{title} is {price_discounted} with {discount} off:\n{store_url}\n".format(**app)
-                if discount >= THRESHOLD:
-                    matches.append(template)
-                if include_close_matches:
-                    if THRESHOLD - discount <= VARIANCE and not discount >= THRESHOLD and discount > 0:
-                        close_matches.append(template)
-        payload = "\n".join(matches)
-        if close_matches:
-            payload += "You have some close matches:\n" + '\n'.join(
-                close_matches) if close_matches else ''
-        return payload
+    @property
+    def apps(self):
+        """Return compiled app info, truncate wishlist"""
+        return (Apps(app) for app in self.soup.find_all('div', 'wishlistRow'))
 
-    def send_message(self, payload, recepient_number):
-        response = requests.get(NEXMO_SMS_URL, params={
-            'api_key': os.environ.get('NEXMO_API_KEY'),
-            'api_secret': os.environ.get('NEXMO_API_SECRET'),
-            'to': recepient_number,
-            'from': "Steampy",
-            'text': payload})
-        response_data = response.json()
+    @property
+    def length(self):
+        """Return wishlist length"""
+        return len(list(self.apps))
 
-        # print response_data
-        print "Sent to {0}, n/o messages {1}: {2}".format(
-            recepient_number,
-            response_data["message-count"],
-            ', '.join([m["message-id"] for m in response_data["messages"]]))
-        return response_data
+    @property
+    def matches(self):
+        """Return only matching titles"""
+        return (app for app in self.apps if app.discount_int >= self.threshold)
 
-    def main(self):
-        item_list = self.get_content()
-        short_list = self.truncate_wish_list(list(item_list))
-        payload = self.prepare_payload(short_list)
-        print [payload]
+    @property
+    def close_matches(self):
+        """Return close matched titles based on tolerance"""
+        tolerance = range(self.threshold - VARIANCE, self.threshold)
+        return (app for app in self.apps if app.discount_int in tolerance)
+
+    @property
+    def discounted(self):
+        """Return only discounted titles"""
+        return (app for app in self.apps if app.discount)
+
+    def __str__(self):
+        return "Steampy (url: {url})\n".format(url=self.req.url)
+
+
+class Apps(object):
+
+    def __init__(self, soup):
+        self.soup = soup
+
+    @property
+    def app_id(self):
+        return self.soup['id'][5:]
+
+    @property
+    def title(self):
+        return self.soup.h4.string
+
+    @property
+    def discount(self):
+        discount = None
+        try:
+            discount_pct = self.soup.select_one('div.discount_pct')
+            discount = discount_pct.string
+        finally:
+            return discount
+
+    @property
+    def discount_int(self):
+        discount_int = None
+        try:
+            discount_int = int(self.discount.strip('%-'))
+        finally:
+            return discount_int
+
+    @property
+    def price_discounted(self):
+        price_discounted = None
+        try:
+            discount_fp = self.soup.select_one('div.discount_final_price')
+            price_discounted = discount_fp.string
+        finally:
+            return price_discounted
+
+    @property
+    def store_url(self):
+        return STEAM_STORE_URL.format(self.app_id)
+
+    @property
+    def price_default(self):
+        price_default = None
+        try:
+            price = self.soup.select_one('div.price')
+            price_default = price.string.strip(' \t\n\r')
+        finally:
+            return price_default
+
+
+def prepare_payload(wish_list, include_close_matches=True):
+    template = (u"{0.title} is {0.price_discounted} with {0.discount} off:"
+                u"\n{0.store_url}\n")
+    payload = "".join(template.format(app) for app in wish_list.matches)
+
+    if include_close_matches and list(wish_list.close_matches):
+        payload += "You have some close matches:\n"
+        payload += "".join(
+            template.format(app) for app in wish_list.close_matches)
+    return payload
+
 
 if __name__ == "__main__":
-    s = Steampy()
-    s.main()
+    wl = WishList(STEAM_ID)
+    print wl
+    print prepare_payload(wl).encode('utf-8')
+
+
